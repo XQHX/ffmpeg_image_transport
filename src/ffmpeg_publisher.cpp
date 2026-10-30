@@ -16,6 +16,7 @@
 #include <ffmpeg_encoder_decoder/utils.hpp>
 #include <ffmpeg_image_transport/ffmpeg_publisher.hpp>
 #include <ffmpeg_image_transport/utils.hpp>
+#include <stdexcept>
 
 using namespace std::placeholders;
 
@@ -26,6 +27,25 @@ using ParameterDescriptor = ParameterDefinition::ParameterDescriptor;
 using ParameterType = rcl_interfaces::msg::ParameterType;
 
 static const ParameterDefinition params[] = {
+  {ParameterValue(static_cast<int>(3)),
+   ParameterDescriptor().set__name("rga_cores").set__type(rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER)
+     .set__description("RGA3 core mask: 0 auto, 1 core0, 2 core1, 3 both").set__read_only(false),
+   ""},
+  {ParameterValue("bt601"),
+   ParameterDescriptor().set__name("encoder_color_space").set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
+     .set__description("YUV color matrix: bt601 or bt709").set__read_only(false),
+   ""},
+  {ParameterValue("full"),
+   ParameterDescriptor().set__name("encoder_color_range").set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
+     .set__description("YUV color range: full or limited").set__read_only(false),
+   ""},
+  {ParameterValue(false),
+   ParameterDescriptor()
+     .set__name("encoder_use_rga")
+     .set__type(rcl_interfaces::msg::ParameterType::PARAMETER_BOOL)
+     .set__description("use librga/im2d hardware format conversion; restart required")
+     .set__read_only(false),
+   ""},
   {ParameterValue("libx264"),
    ParameterDescriptor()
      .set__name("encoder")
@@ -64,6 +84,17 @@ static const ParameterDefinition params[] = {
      .set__read_only(false)
      .set__integer_range({rcl_interfaces::msg::IntegerRange()
                             .set__from_value(-1)
+                            .set__to_value(std::numeric_limits<int>::max())
+                            .set__step(1)}),
+   ""},
+  {ParameterValue(static_cast<int>(100)),
+   ParameterDescriptor()
+     .set__name("frame_rate")
+     .set__type(ParameterType::PARAMETER_INTEGER)
+     .set__description("encoder frames per second; requires restarting the publisher")
+     .set__read_only(false)
+     .set__integer_range({rcl_interfaces::msg::IntegerRange()
+                            .set__from_value(1)
                             .set__to_value(std::numeric_limits<int>::max())
                             .set__step(1)}),
    ""},
@@ -127,7 +158,17 @@ void FFMPEGPublisher::declareParameter(NodeType node, const ParameterDefinition 
   // transport scoped parameter (e.g. image_raw.compressed.format)
   const auto v = definition.declare(node, paramNamespace_);
   const auto & n = definition.descriptor.name;
-  if (n == "encoder") {
+  if (n == "rga_cores") {
+    const auto cores = v.get<int64_t>();
+    if (cores < 0 || cores > 3) { throw std::invalid_argument("rga_cores must be 0..3"); }
+    encoder_.setRgaCores(static_cast<int>(cores));
+  } else if (n == "encoder_color_space") {
+    encoder_.setEncoderColorSpace(v.get<std::string>());
+  } else if (n == "encoder_color_range") {
+    encoder_.setEncoderColorRange(v.get<std::string>());
+  } else if (n == "encoder_use_rga") {
+    encoder_.setUseRga(v.get<bool>());
+  } else if (n == "encoder") {
     encoder_.setEncoder(v.get<std::string>());
     RCLCPP_INFO_STREAM(logger_, "using libav encoder: " << v.get<std::string>());
   } else if (n == "encoder_av_options") {
@@ -140,6 +181,16 @@ void FFMPEGPublisher::declareParameter(NodeType node, const ParameterDefinition 
     encoder_.setMaxBFrames(v.get<int>());
   } else if (n == "bit_rate") {
     encoder_.setBitRate(v.get<int>());
+  } else if (n == "frame_rate") {
+    if (v.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER) {
+      throw std::invalid_argument("frame_rate must be a positive 32-bit integer");
+    }
+    const auto fps = v.get<int64_t>();
+    if (fps < 1 || fps > std::numeric_limits<int>::max()) {
+      throw std::invalid_argument("frame_rate must be a positive 32-bit integer");
+    }
+    encoder_.setFrameRate(static_cast<int>(fps), 1);
+    RCLCPP_INFO_STREAM(logger_, "encoder frame rate: " << fps << "/1 fps");
   } else if (n == "gop_size") {
     encoder_.setGOPSize(v.get<int>());
   } else if (n == "cv_bridge_target_format") {
@@ -181,9 +232,9 @@ void FFMPEGPublisher::packetReady(
   msg->flags = flags;
   msg->data.assign(data, data + sz);
 #ifdef IMAGE_TRANSPORT_USE_PUBLISHER_T
-  (*publishFunction_)->publish(*msg);
+  publishFunction_->publish(*msg);
 #else
-  (*publishFunction_)(*msg);
+  publishFunction_(*msg);
 #endif
 }
 
@@ -235,7 +286,7 @@ FFMPEGPublisher::QoSType FFMPEGPublisher::initialize(
 void FFMPEGPublisher::publish(const Image & msg, const PublisherTFn & publisher) const
 {
   FFMPEGPublisher * me = const_cast<FFMPEGPublisher *>(this);
-  me->publishFunction_ = &publisher;
+  me->publishFunction_ = publisher;
   if (!me->encoder_.isInitialized()) {
     if (!me->encoder_.initialize(
           msg.width, msg.height,

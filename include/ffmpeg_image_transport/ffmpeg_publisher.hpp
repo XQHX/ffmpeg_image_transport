@@ -73,7 +73,8 @@ private:
   void handleAVOptions(const std::string & opt);
   // variables ---------
   rclcpp::Logger logger_;
-  const PublisherTFn * publishFunction_{NULL};
+  // Keep the callback alive for delayed packets emitted during flush().
+  PublisherTFn publishFunction_;
   ffmpeg_encoder_decoder::Encoder encoder_;
   uint32_t frameCounter_{0};
   std::string paramNamespace_;

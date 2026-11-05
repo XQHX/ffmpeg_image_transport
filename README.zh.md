@@ -8,9 +8,9 @@
 git clone https://github.com/LHiou/ffmpeg_encoder_decoder.git
 ```
 
-本包调用的 `setUseRga()`、`setEncoderColorSpace()`、`setEncoderColorRange()`、`setRgaCores()` 以及 NV12 直通编码只存在于该分支，换成上游或 apt 版本会**编译失败**（不是只缺参数）。`package.xml` 的 `<depend>` 只决定编译顺序、不拉源码，两个包放进同一工作空间即可，colcon 会自动先编 encoder。
+本包调用配套 encoder fork 的滤镜接口 `setInputFormat()`、`setHWDeviceName()`、`setHWPixelFormat()` 和 `setConversionFilter()`。两个包放在同一工作空间，colcon 会按依赖顺序先编译 encoder。
 
-其余：`ffmpeg_image_transport_msgs`、`image_transport`、`rclcpp`、`cv_bridge`；FFmpeg（`libav*`）；`librga`（可选，供 `encoder_use_rga`）。
+其余依赖包括 `ffmpeg_image_transport_msgs`、`image_transport`、`rclcpp`、`cv_bridge` 和 FFmpeg（含 `libavfilter` 开发包）。Rockchip 硬件转换要求 FFmpeg 提供 `scale_rkrga`。
 
 ## 2. 编码（发布端）
 
@@ -67,11 +67,13 @@ private:
     image.ffmpeg.max_b_frames: 0
     image.ffmpeg.pixel_format: nv12
     image.ffmpeg.encoder_av_options: "rc_mode:CBR"
-    image.ffmpeg.encoder_color_space: bt601
-    image.ffmpeg.encoder_color_range: limited
-    image.ffmpeg.encoder_use_rga: true
-    image.ffmpeg.rga_cores: 3
+    image.ffmpeg.input_format: auto
+    image.ffmpeg.hw_device: rkmpp
+    image.ffmpeg.hw_pixel_format: drm_prime
+    image.ffmpeg.conversion_filter: "hwupload,scale_rkrga=format=nv12:async_depth=0"
 ```
+
+从旧 YAML 迁移时，用这组参数替换 `encoder_use_rga` 和 `rga_cores`。自定义滤镜的实际转换结果应与 `encoder_color_space`、`encoder_color_range` 一致。
 
 ```python
 Node(
@@ -102,8 +104,10 @@ ros2 param dump /camera0/camera_node          # 参数实际取值
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `frame_rate` | int | 100 | 编码帧率，**必须与相机实际帧率一致**（如 20）。上游固定 100，码率控制会按错误帧率分配每帧比特。 |
-| `encoder_use_rga` | bool | `false` | 用 librga/im2d 做 `BGR24/RGB24 → NV12`，替代 CPU `sws_scale`。要求输入 `bgr8`/`rgb8`。 |
-| `rga_cores` | int | 3 | RGA3 核心：0 自动、1 core0、2 core1、3 两个都用。地址受限时用 1/2。 |
+| `input_format` | string | `auto` | 按消息的 `encoding` 识别，也可显式指定 `bgr8` 或 `nv12`。 |
+| `hw_device` | string | `""` | FFmpeg 硬件设备类型，例如 `rkmpp`。 |
+| `hw_pixel_format` | string | `""` | 编码器硬件帧格式，例如 `drm_prime`。 |
+| `conversion_filter` | string | `""` | BGR8 到 NV12 的滤镜链，留空使用默认软件滤镜。 |
 | `encoder_color_space` | string | `bt601` | RGB→YUV 矩阵，`bt601`/`bt709`。 |
 | `encoder_color_range` | string | `full` | YUV 范围，`full`/`limited`。 |
 | `encoder` | string | `libx264` | 编码器名：`h264_rkmpp`、`libx264`、`hevc_nvenc`… |
@@ -118,12 +122,13 @@ ros2 param dump /camera0/camera_node          # 参数实际取值
 
 ## 4. 输入格式分支
 
-按消息的 `encoding` 自动选路，不需要额外参数：
+`input_format: auto` 时，首帧的 `encoding` 决定使用哪条编码路径。
 
-- `bgr8`/`rgb8`：cv_bridge 转 `cv::Mat` → `encoder_use_rga=true` 时 RGA 转 NV12，否则 `sws_scale`；
-- `nv12`：跳过 cv_bridge，按 `step` 直接填 `AVFrame`，省一次拷贝和一次转换。要求宽高与 `step` 为偶数、平面连续，编码器像素格式为 `nv12`（设 `pixel_format: nv12`）。
+- `bgr8` 通过 `libavfilter` 转为 NV12。软件编码时可选 `libx264`，设备、硬件帧格式和滤镜链留空。
+- `nv12` 按 `step` 包装连续的 Y/UV 平面后直接编码，按需上传硬件帧。
+- Mono8、Bayer 等其他格式继续使用原有分支，按需配置 `cv_bridge_target_format`。
 
-`encoder_color_space`/`encoder_color_range` 只在 RGA 转换或 NV12 直通时写入编码上下文。
+默认软件滤镜使用 `encoder_color_space` 和 `encoder_color_range` 进行转换并标记编码输出。自定义滤镜和 NV12 直通时，这两个参数应描述实际的像素数据。
 
 ## 5. 解码（未完成）
 
@@ -131,8 +136,8 @@ ros2 param dump /camera0/camera_node          # 参数实际取值
 
 ## 6. 约束与排查
 
-- RGA 只支持 `BGR24/RGB24 ↔ NV12`，尺寸必须一致，NV12 宽高必须为偶数；失败直接抛异常，不回退 CPU。
-- `bt709` + `full` 组合 RGA 不支持，初始化报错。编码端色彩矩阵/范围要与相机一致，否则偏色。
+- BGR8 滤镜链需保持尺寸，并且每输入一帧立即输出一帧 NV12。NV12 宽高必须为偶数。
+- BGR8/NV12 路径的压缩包使用 `h264;nv12` 等两段描述。接收端若按旧的四段描述指定解码器，可改用 `decoders.h264_nv12`。
 - 编码器在第一帧时按尺寸初始化，运行中不能改分辨率，需重启节点。
 - 水平分辨率非 32 倍数时上游会告警。
 - 参数不生效先查键名：`ros2 param list` 里实际叫什么，就按什么改。

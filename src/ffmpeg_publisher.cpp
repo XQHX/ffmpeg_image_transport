@@ -27,23 +27,46 @@ using ParameterDescriptor = ParameterDefinition::ParameterDescriptor;
 using ParameterType = rcl_interfaces::msg::ParameterType;
 
 static const ParameterDefinition params[] = {
-  {ParameterValue(static_cast<int>(3)),
-   ParameterDescriptor().set__name("rga_cores").set__type(rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER)
-     .set__description("RGA3 core mask: 0 auto, 1 core0, 2 core1, 3 both").set__read_only(false),
+  {ParameterValue("auto"),
+   ParameterDescriptor()
+     .set__name("input_format")
+     .set__type(ParameterType::PARAMETER_STRING)
+     .set__description("Input pixel layout: auto, bgr8 or nv12.")
+     .set__read_only(true),
+   ""},
+  {ParameterValue(""),
+   ParameterDescriptor()
+     .set__name("hw_device")
+     .set__type(ParameterType::PARAMETER_STRING)
+     .set__description("FFmpeg hardware device type, e.g. rkmpp.")
+     .set__read_only(true),
+   ""},
+  {ParameterValue(""),
+   ParameterDescriptor()
+     .set__name("hw_pixel_format")
+     .set__type(ParameterType::PARAMETER_STRING)
+     .set__description("Encoder hardware frame format, e.g. drm_prime.")
+     .set__read_only(true),
+   ""},
+  {ParameterValue(""),
+   ParameterDescriptor()
+     .set__name("conversion_filter")
+     .set__type(ParameterType::PARAMETER_STRING)
+     .set__description("BGR8-to-NV12 filter chain. Empty uses the default software filter.")
+     .set__read_only(true),
    ""},
   {ParameterValue("bt601"),
-   ParameterDescriptor().set__name("encoder_color_space").set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
-     .set__description("YUV color matrix: bt601 or bt709").set__read_only(false),
+   ParameterDescriptor()
+     .set__name("encoder_color_space")
+     .set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
+     .set__description("YUV color matrix: bt601 or bt709")
+     .set__read_only(false),
    ""},
   {ParameterValue("full"),
-   ParameterDescriptor().set__name("encoder_color_range").set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
-     .set__description("YUV color range: full or limited").set__read_only(false),
-   ""},
-  {ParameterValue(false),
    ParameterDescriptor()
-     .set__name("encoder_use_rga")
-     .set__type(rcl_interfaces::msg::ParameterType::PARAMETER_BOOL)
-     .set__description("use librga/im2d hardware format conversion; restart required")
+     .set__name("encoder_color_range")
+     .set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
+     .set__description("YUV color range: full or limited")
      .set__read_only(false),
    ""},
   {ParameterValue("libx264"),
@@ -158,16 +181,18 @@ void FFMPEGPublisher::declareParameter(NodeType node, const ParameterDefinition 
   // transport scoped parameter (e.g. image_raw.compressed.format)
   const auto v = definition.declare(node, paramNamespace_);
   const auto & n = definition.descriptor.name;
-  if (n == "rga_cores") {
-    const auto cores = v.get<int64_t>();
-    if (cores < 0 || cores > 3) { throw std::invalid_argument("rga_cores must be 0..3"); }
-    encoder_.setRgaCores(static_cast<int>(cores));
+  if (n == "input_format") {
+    encoder_.setInputFormat(v.get<std::string>());
+  } else if (n == "hw_device") {
+    encoder_.setHWDeviceName(v.get<std::string>());
+  } else if (n == "hw_pixel_format") {
+    encoder_.setHWPixelFormat(v.get<std::string>());
+  } else if (n == "conversion_filter") {
+    encoder_.setConversionFilter(v.get<std::string>());
   } else if (n == "encoder_color_space") {
     encoder_.setEncoderColorSpace(v.get<std::string>());
   } else if (n == "encoder_color_range") {
     encoder_.setEncoderColorRange(v.get<std::string>());
-  } else if (n == "encoder_use_rga") {
-    encoder_.setUseRga(v.get<bool>());
   } else if (n == "encoder") {
     encoder_.setEncoder(v.get<std::string>());
     RCLCPP_INFO_STREAM(logger_, "using libav encoder: " << v.get<std::string>());

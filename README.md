@@ -85,6 +85,13 @@ Here is a list of the available encoding parameters:
   The larger this number, the worse the image looks, and the more efficient the encoding.
 - ``encoder_measure_performance``: For performance debugging (developers only). Defaults to false.
 
+For BGR8 and NV12, ``input_format`` defaults to ``auto``, which uses the ROS
+image encoding. Set ``conversion_filter`` to supply a BGR8-to-NV12 FFmpeg chain.
+An empty chain uses the default software filter, and NV12 input bypasses
+conversion. Set ``hw_device`` and ``hw_pixel_format`` when using hardware frames.
+These options replace ``encoder_use_rga`` and ``rga_cores``.
+See the [Rockchip YAML example](README.zh.md#22-参数).
+
 The parameters are under the ``ffmpeg`` variable block. If you launch
 your publisher node (camera driver), you can give it a parameter list on the way like so:
 

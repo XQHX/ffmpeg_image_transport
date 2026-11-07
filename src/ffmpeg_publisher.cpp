@@ -16,7 +16,6 @@
 #include <ffmpeg_encoder_decoder/utils.hpp>
 #include <ffmpeg_image_transport/ffmpeg_publisher.hpp>
 #include <ffmpeg_image_transport/utils.hpp>
-#include <stdexcept>
 
 using namespace std::placeholders;
 
@@ -58,14 +57,14 @@ static const ParameterDefinition params[] = {
   {ParameterValue("bt601"),
    ParameterDescriptor()
      .set__name("encoder_color_space")
-     .set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
+     .set__type(ParameterType::PARAMETER_STRING)
      .set__description("YUV color matrix: bt601 or bt709")
      .set__read_only(false),
    ""},
   {ParameterValue("full"),
    ParameterDescriptor()
      .set__name("encoder_color_range")
-     .set__type(rcl_interfaces::msg::ParameterType::PARAMETER_STRING)
+     .set__type(ParameterType::PARAMETER_STRING)
      .set__description("YUV color range: full or limited")
      .set__read_only(false),
    ""},
@@ -207,12 +206,12 @@ void FFMPEGPublisher::declareParameter(NodeType node, const ParameterDefinition 
   } else if (n == "bit_rate") {
     encoder_.setBitRate(v.get<int>());
   } else if (n == "frame_rate") {
-    if (v.get_type() != rclcpp::ParameterType::PARAMETER_INTEGER) {
-      throw std::invalid_argument("frame_rate must be a positive 32-bit integer");
-    }
-    const auto fps = v.get<int64_t>();
+    const int64_t fps = v.get<int64_t>();
     if (fps < 1 || fps > std::numeric_limits<int>::max()) {
-      throw std::invalid_argument("frame_rate must be a positive 32-bit integer");
+      RCLCPP_ERROR_STREAM(
+        logger_,
+        "frame_rate must be a positive 32-bit integer, got " << fps);
+      return;
     }
     encoder_.setFrameRate(static_cast<int>(fps), 1);
     RCLCPP_INFO_STREAM(logger_, "encoder frame rate: " << fps << "/1 fps");
